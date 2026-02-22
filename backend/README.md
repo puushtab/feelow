@@ -1,143 +1,190 @@
-# Feelow Backend 🔧
+# Feelow 🦈
 
-FastAPI backend powering Feelow's Polymarket analysis pipeline.
+**Cross-Market Intelligence Platform — Prediction Markets × Financial Sentiment**
 
-## Architecture
+Feelow detects mispricings between what prediction markets (Polymarket) anticipate and what real financial markets (stocks, crypto) reflect. It fuses FinBERT sentiment, technical indicators, and Polymarket signals into a unified **Market Mispricing Score** displayed in a live Next.js dashboard.
+
+---
+
+## 📊 Features
+
+| Feature | Description |
+|---------|-------------|
+| **FinBERT Ensemble Sentiment** | 3-model voting (ProsusAI/finbert, DistilRoBERTa Financial, Sigma Financial SA) |
+| **Reddit Finance Sentiment** | FinBERT scoring on reddit-finance dataset via HuggingFace |
+| **Real-Time RSS Ingestion** | Yahoo Finance headlines per ticker |
+| **Technical Indicators** | SMA, EMA, RSI, MACD, Bollinger Bands |
+| **Polymarket Agent Search** | Gemini LLM searches Polymarket for prediction markets related to any company |
+| **Polymarket Scoring** | Momentum, volatility, concentration, composite signal, cross-market correlation |
+| **Next.js Dashboard** | Live KPIs, interactive price charts, news table with sentiment, Polymarket panel |
+
+---
+
+## 🏗️ Architecture
 
 ```
-backend/
-├── src/
-│   ├── main.py                          # FastAPI app + endpoints
-│   ├── full_pipeline.py                 # get_polymarket() — glue between modules
-│   ├── agent-search/
-│   │   └── polymarket_pipeline.py       # Gemini LLM → Polymarket search + pertinence scoring
-│   ├── polymarket-analysis/
-│   │   └── score_polymarket.py          # Market class, advanced metrics, ranking
-│   ├── stock-analysis/                  # (reserved for future stock analysis)
-│   └── config/                          # (reserved for configuration)
-└── tests/
-    ├── test_full_pipeline.py            # Unit tests for full_pipeline (mocked LLM)
-    ├── test_score_polymarket.py         # Unit tests for scoring module
-    └── test_backend.py                  # Integration tests for the HTTP API
+feelow/
+├── backend/                          # FastAPI unified API (port 8000)
+│   ├── src/
+│   │   ├── main.py                   # FastAPI app — all endpoints
+│   │   ├── config.py                 # Central config (models, tickers, thresholds)
+│   │   ├── full_pipeline.py          # Polymarket pipeline glue (agent-search → scoring)
+│   │   ├── finance-data/             # Core financial modules
+│   │   │   ├── sentiment_engine.py   # Multi-model FinBERT ensemble
+│   │   │   ├── news_ingestor.py      # RSS headline fetching
+│   │   │   ├── market_data.py        # yfinance price data loader
+│   │   │   ├── technicals.py         # RSI, MACD, Bollinger, SMA, EMA
+│   │   │   ├── gemini_agent.py       # Google Gemini search grounding agent
+│   │   │   └── agent_orchestrator.py # Multi-step agentic pipeline orchestrator
+│   │   ├── agent_search/             # Polymarket LLM search
+│   │   │   ├── polymarket_pipeline.py
+│   │   │   ├── orchestrator.py
+│   │   │   └── scoring/              # Relevance, impact, novelty, sentiment, reliability
+│   │   ├── polymarket-analysis/      # Advanced market scoring
+│   │   │   └── market_scorer.py      # Momentum, volatility, concentration, composite signal
+│   │   └── stock_analysis/           # Reddit-based FinBERT sentiment
+│   │       └── api_finbert_transformer.py
+│   └── tests/
+└── webapp/
+    └── UI-fr/                        # Next.js 15 dashboard (port 3000)
+        ├── app/dashboard/page.tsx    # Main dashboard page
+        ├── lib/ticker-context.tsx    # Global ticker state + API calls
+        └── components/
+            ├── section-cards.tsx           # KPI cards (price, sentiment, RSI, signal)
+            ├── chart-area-interactive.tsx  # OHLCV price chart + Polymarket panel
+            ├── data-table.tsx              # News headlines with sentiment badges
+            └── app-sidebar.tsx             # Ticker selector (Tech / Finance / Crypto)
 ```
 
-## How It Works
+---
 
-The backend exposes a single main endpoint — `POST /get_polymarket` — that runs a **two-step pipeline**:
+## 🔄 Webapp Data Pipeline
 
-### Step 1 — Agent Search (`agent-search/polymarket_pipeline.py`)
+When the user selects a ticker in the sidebar, the Next.js frontend triggers parallel fetches to four backend endpoints:
 
-Uses **Gemini LLM** with forced tool-calling to:
-1. Build varied search queries from a company name (e.g. `"NVIDIA"`)
-2. Call the Polymarket API to find related prediction markets
-3. Score each market's **pertinence** (0–100) via structured LLM output
+```
+User selects ticker
+        │
+        ├─→ GET /api/kpis?ticker=X
+        │       MarketDataLoader → yfinance price + 7d change
+        │       NewsIngestor → RSS headlines
+        │       MultiModelSentimentEngine → avg_sentiment, signal
+        │       TechnicalIndicators → RSI
+        │       → SectionCards: price, Δ%, news volume, sentiment score, RSI, signal
+        │
+        ├─→ GET /api/price-history?ticker=X
+        │       MarketDataLoader → OHLCV (yfinance)
+        │       TechnicalIndicators → SMA20, SMA50, RSI, MACD, Bollinger
+        │       → ChartAreaInteractive: area chart with period selector (7d/1mo/3mo/1y)
+        │
+        ├─→ GET /api/news?ticker=X
+        │       NewsIngestor → RSS headlines
+        │       MultiModelSentimentEngine → per-headline label + confidence
+        │       → DataTable: sortable news feed with sentiment badges
+        │
+        └─→ GET /api/polymarket?ticker=X
+                ticker → company name mapping
+                PolymarketPipeline (Gemini) → relevant markets (pertinence 0–100)
+                market_scorer → momentum, volatility, concentration, composite signal
+                → ChartAreaInteractive: Polymarket panel with top markets + global score
+```
 
-### Step 2 — Advanced Scoring (`polymarket-analysis/score_polymarket.py`)
+`SectionCards` also fires a separate call for community sentiment:
+```
+POST /api/sentiment/score  { company }
+        stock_analysis (Reddit FinBERT) → community sentiment score
+        → displayed as "Reddit Sentiment" gauge card
+```
 
-Takes the raw markets and computes:
-- **Momentum** — recent price trend direction
-- **Volatility** — price range over history
-- **Concentration** — probability skew (entropy-based)
-- **Composite signal** — direction + strength scaled by pertinence, liquidity, and history quality
-- **Correlation** between top markets
-- **Claude-ready summary block** — text to inject into LLM prompts
+---
 
-### Glue — `full_pipeline.py`
-
-The `get_polymarket()` function connects both modules:
-- Handles the **format bridge** between `price_history` (agent-search) and `history` (scoring)
-- Normalises pertinence from the 0–100 scale to 0–1
-- Returns a unified result with raw data, scored summaries, and the Claude block
-
-## Setup
+## 🚀 Quick Start
 
 ### Prerequisites
 
 - Python 3.10+
-- A **Gemini API key** (`GEMINI_API_KEY` or `GOOGLE_API_KEY` env var)
+- Node.js 18+
+- `GEMINI_API_KEY` (required)
 
-### Install dependencies
-
-```bash
-pip install fastapi uvicorn google-genai mcp pydantic numpy requests
-```
-
-### Run the server
+### 1. Backend (FastAPI)
 
 ```bash
 cd backend/src
-GEMINI_API_KEY=your_key_here uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+pip install -r requirements.txt
+
+echo "GEMINI_API_KEY=your_key" > ../.env
+
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The API will be available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
+API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-## API Reference
-
-### `GET /`
-
-Health check.
-
-```json
-{ "status": "ok", "service": "Feelow Polymarket API" }
-```
-
-### `POST /get_polymarket`
-
-Run the full analysis pipeline.
-
-**Request body:**
-
-| Field             | Type   | Default | Description                            |
-|-------------------|--------|---------|----------------------------------------|
-| `company`         | string | —       | Company name (e.g. `"NVIDIA"`)         |
-| `date`            | string | `null`  | Date context (e.g. `"February 2026"`)  |
-| `max_queries`     | int    | `1`     | Search query variations (1–3)          |
-| `limit_per_query` | int    | `10`    | Max markets per search query (1–50)    |
-| `top_k`           | int    | `5`     | Top markets in the summary (1–20)      |
-
-**Example:**
+### 2. Next.js Dashboard
 
 ```bash
-curl -X POST http://localhost:8000/get_polymarket \
-  -H "Content-Type: application/json" \
-  -d '{"company": "NVIDIA", "date": "February 2026", "top_k": 3}'
+cd webapp/UI-fr
+npm install
+npm run dev
 ```
 
-**Response:**
+Open [http://localhost:3000](http://localhost:3000).
 
-| Field                  | Type   | Description                                    |
-|------------------------|--------|------------------------------------------------|
-| `raw_markets`          | list   | All markets found by agent-search              |
-| `top_markets_summary`  | list   | Scored summaries for the top-k markets         |
-| `corr_top2`            | float  | Pearson correlation between top 2 markets      |
-| `global_score`         | float  | Weighted global score                          |
-| `claude_block`         | string | Text block ready to inject into an LLM prompt  |
+---
 
-## Testing
+## 📡 API Endpoints (used by the dashboard)
 
-### Unit tests (no server or API key needed)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/kpis?ticker=X` | Price, pct_change, avg_sentiment, RSI, signal |
+| `GET` | `/api/news?ticker=X` | Headlines with per-headline FinBERT sentiment |
+| `GET` | `/api/price-history?ticker=X` | OHLCV + SMA, EMA, RSI, MACD, Bollinger |
+| `GET` | `/api/polymarket?ticker=X` | Polymarket scored markets for the ticker |
+| `POST` | `/api/sentiment/score` | Reddit-based FinBERT community sentiment score |
+
+---
+
+## 🤖 Sentiment Models
+
+| Model | HuggingFace ID | Best For |
+|-------|---------------|----------|
+| **FinBERT (ProsusAI)** | `ProsusAI/finbert` | General financial sentiment |
+| **DistilRoBERTa Financial** | `mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis` | Financial news tone |
+| **Sigma Financial SA** | `Sigma/financial-sentiment-analysis` | High-accuracy classification |
+
+---
+
+## 🧪 Tests
 
 ```bash
 cd backend
-python -m pytest tests/test_score_polymarket.py tests/test_full_pipeline.py -v
+python -m pytest tests/ -v
 ```
 
-### Integration tests (requires running server)
+| Test file | What's covered |
+|-----------|----------------|
+| `test_score_polymarket.py` | Helpers, Market class, correlation, scoring pipeline |
+| `test_full_pipeline.py` | Format bridge, pertinence normalisation, mocked flow |
+| `test_backend.py` | HTTP endpoints, validation, full E2E |
 
-```bash
-# Terminal 1: start the server
-cd backend/src
-GEMINI_API_KEY=your_key uvicorn main:app --port 8000
+---
 
-# Terminal 2: run the tests
-cd backend
-python tests/test_backend.py
-```
+## 🏆 Hackathon Tracks
 
-### Test coverage
+- **Best Use of Data (Susquehanna €7K)** — Fuses RSS news, price data, and prediction markets into trading signals
+- **Best Use of Gemini (€50K credits)** — Gemini visual chart analysis + search grounding agent
+- **Fintech Track (€1K)** — Cross-market mispricing detection platform
 
-| Test file                  | Tests | What's covered                                       |
-|----------------------------|-------|------------------------------------------------------|
-| `test_score_polymarket.py` | 54    | Helpers, Market class, correlation, scoring pipeline  |
-| `test_full_pipeline.py`    | 17    | Format bridge, pertinence normalisation, mocked flow  |
-| `test_backend.py`          | 4     | HTTP endpoints, validation, full E2E                  |
+---
+
+## 👥 Team
+
+- **Gabriel Dupuis** — ML Engineer @ Deezer, ENSTA Paris, Stanford
+- **Adrien Scazzola** — Security & AI, Microsoft
+- **Amine Ould** — Development, ENS-MVA
+- **Tristan Lecourtois** — NASA, Systems Engineering, ENS-MVA
+
+---
+
+## License
+
+MIT — Built for HackEurope 2026
