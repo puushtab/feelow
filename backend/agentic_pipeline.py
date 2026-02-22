@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -208,34 +209,57 @@ def _compute_quality(it: Item) -> float:
 
 
 def _aggregate_bundle_metrics(bundle: Bundle) -> Dict[str, Any]:
+    """
+    Computes:
+      - reliable_source_score (0..1)
+      - signal_score (-1..1)
+      - signal_strength (0..1)
+      - avg_sentiment_weighted (-1..1)
+      - source_mix
+    """
+
     qs = []
     by_source: Dict[str, int] = {}
 
+    # ---- Compute per-item quality ----
     for it in bundle.selected:
         q = _compute_quality(it)
         it.scores["quality"] = q
         qs.append(q)
         by_source[it.source] = by_source.get(it.source, 0) + 1
 
+    # ---- Reliable Source Score (0..1) ----
     prod = 1.0
     for q in qs:
         prod *= (1.0 - q)
-    rss = 1.0 - prod
+    reliable_source_score = 1.0 - prod
 
+    # ---- Weighted Sentiment (-1..1) ----
     wsum = 0.0
     ssum = 0.0
+
     for it in bundle.selected:
         q = float(it.scores.get("quality", 0.0))
-        s = float(it.scores.get("sentiment", 0.0))
+        s = float(it.scores.get("sentiment", 0.0))  # already in [-1,1]
         wsum += q
         ssum += q * s
+
     avg_sent = (ssum / wsum) if wsum > 1e-12 else 0.0
 
+    # ---- Final Signal Score (-1..1) ----
+    # Multiply direction by evidence robustness
+    signal_score = avg_sent * reliable_source_score
+
+    # ---- Signal Strength (0..1) ----
+    signal_strength = abs(signal_score)
+
     return {
-        "reliable_source_score": float(max(0.0, min(1.0, rss))),
+        "reliable_source_score": round(max(0.0, min(1.0, reliable_source_score)), 4),
+        "avg_sentiment_weighted": round(max(-1.0, min(1.0, avg_sent)), 4),
+        "signal_score": round(max(-1.0, min(1.0, signal_score)), 4),
+        "signal_strength": round(signal_strength, 4),
         "selected_count": len(bundle.selected),
         "source_mix": by_source,
-        "avg_sentiment_weighted": float(avg_sent),
     }
 
 
@@ -245,41 +269,48 @@ def _aggregate_bundle_metrics(bundle: Bundle) -> Dict[str, Any]:
 
 class GeminiLLMClient:
     """
-    Minimal Gemini wrapper that supports multimodal parts.
+    Minimal Gemini wrapper (google-genai) that supports multimodal parts.
 
     Requires:
-      pip install google-generativeai
+      pip install google-genai
 
-    Usage:
-      llm = GeminiLLMClient(api_key=os.environ["GEMINI_API_KEY"], model="gemini-1.5-pro")
-      text = llm.complete(prompt="...", media_parts=[{"mime_type":"image/png","data":...}, ...])
+    IMPORTANT:
+      We force stable API v1 (your test confirmed it works).
     """
-    def __init__(self, api_key: str, model: str = "gemini-1.5-pro", temperature: float = 0.2):
-        import google.generativeai as genai  # type: ignore
-        genai.configure(api_key=api_key)
-        self.model_name = model
-        self.temperature = temperature
-        self._genai = genai
-        self._model = genai.GenerativeModel(model)
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", temperature: float = 0.2):
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
 
-    def complete(self, prompt: str, media_parts: Optional[List[Dict[str, Any]]] = None) -> str:
-        generation_config = self._genai.types.GenerationConfig(
-            temperature=self.temperature,
+        self._types = types
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version="v1"),
         )
 
+        self.model_name = model
+        self.temperature = temperature
+
+    def complete(self, prompt: str, media_parts: Optional[List[Dict[str, Any]]] = None) -> str:
         contents: List[Any] = []
+
         if media_parts:
-            # Each part: {"mime_type": "...", "data": bytes}
             for p in media_parts:
-                contents.append(self._genai.types.Part.from_bytes(p["data"], mime_type=p["mime_type"]))
+                contents.append(
+                    self._types.Part.from_bytes(
+                        data=p["data"],
+                        mime_type=p["mime_type"],
+                    )
+                )
 
         contents.append(prompt)
 
-        resp = self._model.generate_content(
-            contents,
-            generation_config=generation_config,
+        resp = self.client.models.generate_content(
+            model=self.model_name,  # e.g. "gemini-2.5-flash" or "gemini-2.5-pro"
+            contents=contents,
+            config=self._types.GenerateContentConfig(
+                temperature=self.temperature
+            ),
         )
-        # resp.text is usually present; if blocked/empty, return safe string
         return (getattr(resp, "text", None) or "").strip()
 
 
@@ -586,7 +617,8 @@ collectors = [
 ]
 
 cache = SimpleDictCache()
-llm = GeminiLLMClient(api_key="AIzaSyDufl2aS_gN71WiBsxLAvltIUs-l562Wws", model="gemini-1.5-pro")
+
+llm = GeminiLLMClient(api_key=os.environ["GEMINI_API_KEY"], model="gemini-2.5-flash")
 
 res = run_agentic_pipeline(
     ticker="NVDA",
