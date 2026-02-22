@@ -32,10 +32,11 @@ Polymarket routes:
 
 from __future__ import annotations
 
-import os, sys, math, logging
+import os, sys, math, logging, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from stock_analysis.api_finbert_transformer import compute_sentiment_score, df
 
 import numpy as np
 import pandas as pd
@@ -45,12 +46,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
-load_dotenv()
+
+# .env lives in backend/ (one level above src/)
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_DIR = os.path.dirname(_SRC_DIR)
+load_dotenv(os.path.join(_BACKEND_DIR, ".env"))
 
 logger = logging.getLogger(__name__)
+logger.info(f"GEMINI_API_KEY loaded: {'yes' if os.getenv('GEMINI_API_KEY') else 'NO — check .env'}")
 
 # ─── Path setup ──────────────────────────────────────────────────────────────
-_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 _FINANCE_DATA_DIR = os.path.join(_SRC_DIR, "finance-data")
 
 # Add both dirs to sys.path so modules can import config + each other
@@ -116,6 +121,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+@app.middleware("http")
+async def log_requests(request: StarletteRequest, call_next):
+    """Log every incoming request with method, path, status, and duration."""
+    start = time.perf_counter()
+    logger.info(f"→ {request.method} {request.url.path}?{request.url.query}")
+    try:
+        response: StarletteResponse = await call_next(request)
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"← {request.method} {request.url.path} → {response.status_code} ({elapsed:.0f}ms)")
+        return response
+    except Exception as exc:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.error(f"✗ {request.method} {request.url.path} FAILED ({elapsed:.0f}ms): {exc}")
+        raise
+
+
+# ─── Ticker→Company name mapping (used by /api/polymarket) ──────────────────
+TICKER_TO_COMPANY = {
+    "NVDA": "NVIDIA", "TSLA": "Tesla", "AAPL": "Apple", "AMZN": "Amazon",
+    "MSFT": "Microsoft", "GOOGL": "Google", "META": "Meta", "AMD": "AMD",
+    "NFLX": "Netflix", "JPM": "JPMorgan", "GS": "Goldman Sachs",
+    "BAC": "Bank of America", "COIN": "Coinbase",
+    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana",
+}
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -313,6 +346,30 @@ async def api_sentiment_ensemble(req: EnsembleRequest):
     except Exception as e:
         logger.error(f"/api/sentiment/ensemble error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+class SentimentScoreRequest(BaseModel):
+    company: str = Field(..., description="Company name")
+
+class SentimentScoreResponse(BaseModel):
+    company: str
+    score: float
+    news_count: int
+
+@app.post("/api/sentiment/score", response_model=SentimentScoreResponse)
+async def api_sentiment_score(req: SentimentScoreRequest):
+    try:
+        score = compute_sentiment_score(req.company)
+        news_count = len(df[df['selftext'].str.contains(req.company, case=False, na=False)])
+        return SentimentScoreResponse(
+            company=req.company,
+            score=round(score, 4),
+            news_count=news_count
+        )
+    except Exception as e:
+        logger.error(f"/api/sentiment/score error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @app.post("/api/analysis/claude")
@@ -516,6 +573,58 @@ async def api_price_history(
 # ═════════════════════════════════════════════════════════════════════════════
 # POLYMARKET ENDPOINTS
 # ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/polymarket")
+async def api_polymarket_get(
+    ticker: str = Query("NVDA", description="Ticker symbol"),
+    top_k: int = Query(5, ge=1, le=20),
+):
+    """
+    GET wrapper around the Polymarket pipeline.
+    Maps ticker → company name, runs the pipeline, returns scored markets.
+    Called by the Next.js frontend when the user changes ticker.
+    """
+    company = TICKER_TO_COMPANY.get(ticker, ticker)
+    logger.info(f"🔮 /api/polymarket: ticker={ticker} → company={company}")
+
+    if not _POLYMARKET_AVAILABLE:
+        logger.warning("Polymarket pipeline not available")
+        return {"markets": [], "global_score": 0, "company": company, "error": "Pipeline unavailable"}
+
+    try:
+        result = get_polymarket(
+            company=company,
+            date=datetime.now().strftime("%Y-%m-%d"),
+            max_queries=2,
+            limit_per_query=10,
+            top_k=top_k,
+        )
+        # Flatten for frontend consumption
+        markets_for_ui = []
+        for m in result.get("top_markets_summary", []):
+            adv = m.get("advanced", {})
+            markets_for_ui.append({
+                "question": m.get("question", ""),
+                "url": m.get("url", ""),
+                "score": round(m.get("score") or 0, 4),
+                "engagement": round(m.get("engagement") or 0, 4),
+                "probability": round((adv.get("p_last") or 0) * 100, 1),
+                "composite_signal": round(adv.get("composite_signal") or 0, 4),
+                "volume": m.get("metrics", {}).get("volume") or 0,
+                "liquidity": m.get("metrics", {}).get("liquidity") or 0,
+            })
+        return {
+            "company": company,
+            "ticker": ticker,
+            "markets": markets_for_ui,
+            "global_score": round(result.get("global_score") or 0, 4),
+            "corr_top2": round(result.get("corr_top2") or 0, 4),
+            "claude_block": result.get("claude_block", ""),
+        }
+    except Exception as e:
+        logger.error(f"/api/polymarket error: {e}", exc_info=True)
+        return {"markets": [], "global_score": 0, "company": company, "error": str(e)}
+
 
 @app.get("/")
 async def root():

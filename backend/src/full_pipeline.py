@@ -63,10 +63,10 @@ _pipeline_mod = _import_from_path(
 )
 PolymarketPipeline = _pipeline_mod.PolymarketPipeline
 
-# Import process_polymarket_markets from polymarket-analysis/score_polymarket.py
+# Import process_polymarket_markets from polymarket-analysis/market_scorer.py (v2)
 _score_mod = _import_from_path(
-    "score_polymarket",
-    os.path.join(_SRC_DIR, "polymarket-analysis", "score_polymarket.py"),
+    "market_scorer",
+    os.path.join(_SRC_DIR, "polymarket-analysis", "market_scorer.py"),
 )
 process_polymarket_markets = _score_mod.process_polymarket_markets
 
@@ -223,22 +223,71 @@ def get_polymarket(
     scored = process_polymarket_markets(markets_for_scoring, top_k=top_k)
     log.info("╚══ STEP 2 DONE ══╝")
 
+    # ── Convert Market objects to summary dicts ──────────────────────────────
+    top_markets_summary = []
+    for m in scored["top_markets"]:
+        top_markets_summary.append({
+            "question": m.question,
+            "url": m.url,
+            "score": m.score,
+            "engagement": m.engagement,
+            "metrics": m.metrics,
+            "advanced": m.advanced,
+        })
+
+    # ── Build Claude block ───────────────────────────────────────────────────
+    claude_lines = ["## Polymarket correlated markets\n"]
+    for i, m in enumerate(scored["top_markets"], 1):
+        adv = m.advanced
+        p_last = adv.get("p_last")
+        entropy = adv.get("entropy_nats")
+        slope_recent = adv.get("slope_recent_per_day")
+        tv = adv.get("total_variation", 0)
+        mj = adv.get("max_jump", 0)
+        stale = adv.get("staleness_ratio_0_5", 0)
+        tte = adv.get("time_to_event_days")
+        comp = adv.get("composite_signal")
+        hq = adv.get("history_quality")
+
+        p_pct = f"{(p_last or 0)*100:.2f}%" if p_last is not None else "N/A"
+        bias = "strong YES bias" if (p_last or 0) > 0.8 else ("strong NO bias" if (p_last or 0) < 0.2 else "mixed")
+        consensus = "very high consensus" if (entropy or 999) < 0.1 else ("high consensus" if (entropy or 999) < 0.3 else "moderate")
+
+        claude_lines.append(f"### Market #{i}")
+        claude_lines.append(f"Polymarket market: {m.question}")
+        claude_lines.append(f"Implied YES probability (latest): {p_pct} ({bias}).")
+        claude_lines.append(f"Consensus: {consensus} (entropy={entropy or 0:.3f} nats).")
+        claude_lines.append(
+            f"History dynamics: slope_recent={slope_recent or 0:.5f} prob/day | "
+            f"total_variation={tv:.4f} | max_jump={mj:.4f} | staleness@0.5={stale or 0:.3f}."
+        )
+        claude_lines.append(
+            f"Reliability proxies: pertinence={m.metrics.get('pertinence', 0):.2f} | "
+            f"liquidity(now)={m.liquidity:,.2f} | volume(now)={m.volume:,.2f}."
+        )
+        if tte is not None:
+            claude_lines.append(f"Time to resolution: {tte:.2f} days.")
+        claude_lines.append(f"Composite signal: {comp or 0:.3f} ({'weak/neutral' if abs(comp or 0) < 0.05 else 'notable'})")
+        claude_lines.append(f"URL: {m.url}\n")
+
+    claude_block = "\n".join(claude_lines)
+
     # ── Summary ───────────────────────────────────────────────────────────────
     log.info("")
     log.info("╔══ FINAL RESULT ══╗")
     log.info("  raw_markets:          %d", len(raw_markets))
-    log.info("  top_markets_summary:  %d", len(scored["top_markets_summary"]))
+    log.info("  top_markets_summary:  %d", len(top_markets_summary))
     log.info("  corr_top2:            %.4f", scored["corr_top2"])
     log.info("  global_score:         %.4f", scored["global_score"])
-    for i, s in enumerate(scored["top_markets_summary"], 1):
+    for i, s in enumerate(top_markets_summary, 1):
         log.info("  #%d  score=%.4f  eng=%.4f  %s",
                  i, s["score"], s["engagement"], s["question"][:50])
     log.info("╚══ PIPELINE COMPLETE ══╝")
 
     return {
         "raw_markets": raw_markets,
-        "top_markets_summary": scored["top_markets_summary"],
+        "top_markets_summary": top_markets_summary,
         "corr_top2": scored["corr_top2"],
         "global_score": scored["global_score"],
-        "claude_block": scored["claude_block"],
+        "claude_block": claude_block,
     }

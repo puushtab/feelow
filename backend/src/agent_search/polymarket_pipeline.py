@@ -159,12 +159,14 @@ class PolymarketPipeline:
         scoring_model: str = "gemini-2.5-flash",
         max_queries: int = 1,
         limit_per_query: int = 10,
+        use_llm_search: bool = False,
     ):
         self.client = genai.Client(api_key=api_key)
         self.model = model
         self.scoring_model = scoring_model
         self.max_queries = min(max_queries, 3)
         self.limit_per_query = limit_per_query
+        self.use_llm_search = use_llm_search
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -194,9 +196,7 @@ class PolymarketPipeline:
 
     @staticmethod
     def _build_query(company: str, date: str | None = None) -> str:
-        q = f"Stock price of {company}"
-        if date:
-            q += f" for date {date}"
+        q = f"{company} stock"
         log.info("QUERY BUILT▸ %r", q)
         return q
 
@@ -207,10 +207,12 @@ class PolymarketPipeline:
 
         system = (
             f"You are a Polymarket research assistant.\n"
-            f"Your goal: find ALL prediction markets related to «{natural_query}».\n"
+            f"Your goal: find ALL prediction markets that could impact the stock price of «{company}».\n"
             f"You have ONE tool: search_with_history. You MUST call it.\n"
-            f"Use varied search angles each time (company name, stock, market cap, "
-            f"industry ranking, competitors, sector events…).\n"
+            f"Search broadly: the company name, its stock ticker, earnings, revenue, "
+            f"market cap, its sector/industry (e.g. AI, tech, EV, semiconductors), "
+            f"key competitors, regulation, tariffs, or any macro event that could move the stock.\n"
+            f"Use SHORT, simple keywords (1-3 words). Do NOT add dates or long phrases.\n"
             f"Set limit={self.limit_per_query} and interval=\"all\" for full history."
         )
         log.info("SEARCH STEP▸ system_prompt=%d chars", len(system))
@@ -238,13 +240,14 @@ class PolymarketPipeline:
             if searched_queries:
                 prompt = (
                     f"Already searched: {searched_queries}.\n"
-                    f"Call search_with_history with DIFFERENT keywords to find "
-                    f"more markets about «{natural_query}»."
+                    f"Now search with DIFFERENT keywords: try the sector, competitors, "
+                    f"regulation, tariffs, or macro events related to {company}. "
+                    f"Use 1-3 word queries only."
                 )
             else:
                 prompt = (
-                    f"Search for Polymarket prediction markets related to: "
-                    f"«{natural_query}»"
+                    f"Search for Polymarket prediction markets related to {company}. "
+                    f"Use the company name as query."
                 )
             log.info("LLM INPUT  ▸ %s", prompt)
 
@@ -290,6 +293,47 @@ class PolymarketPipeline:
 
         log.info("SEARCH DONE▸ %d unique markets from %d queries",
                  len(all_markets), len(searched_queries))
+        return all_markets
+
+    # ── Direct search (no LLM) ────────────────────────────────────────────────
+
+    def _search_step_direct(self, company: str) -> list[dict]:
+        """
+        Search Polymarket directly with two fixed queries:
+          1. "{company}"
+          2. "{company} stock"
+        No LLM involved — faster and cheaper.
+        """
+        queries = [company, f"{company} stock"]
+        all_markets: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for q in queries:
+            log.info("DIRECT SEARCH▸ query=%r  limit=%d", q, self.limit_per_query)
+            t0 = time.time()
+            try:
+                results = search_with_history(
+                    query=q,
+                    limit=self.limit_per_query,
+                    interval="all",
+                    include_closed=False,
+                )
+            except Exception as e:
+                log.error("DIRECT SEARCH ERROR▸ %s", e)
+                continue
+            elapsed = time.time() - t0
+            new = 0
+            for m in results:
+                mid = m.get("id", "")
+                if mid and mid not in seen_ids:
+                    seen_ids.add(mid)
+                    all_markets.append(m)
+                    new += 1
+            log.info("DIRECT SEARCH▸ %d returned, %d new, %d total (%.1fs)",
+                     len(results), new, len(all_markets), elapsed)
+
+        log.info("DIRECT SEARCH DONE▸ %d unique markets from %d queries",
+                 len(all_markets), len(queries))
         return all_markets
 
     # ── Step 3: Batch pertinence scoring (structured output) ──────────────────
@@ -393,9 +437,14 @@ class PolymarketPipeline:
 
         # ── Step 1+2: Search ──────────────────────────────────────────────────
         log.info("")
-        log.info("╔══ STEP 1+2: SEARCH (LLM → tool calls → Polymarket API) ══╗")
-        t0 = time.time()
-        markets = self._search_step(company, date)
+        if self.use_llm_search:
+            log.info("╔══ STEP 1+2: SEARCH (LLM → tool calls → Polymarket API) ══╗")
+            t0 = time.time()
+            markets = self._search_step(company, date)
+        else:
+            log.info("╔══ STEP 1+2: SEARCH (DIRECT — no LLM) ══╗")
+            t0 = time.time()
+            markets = self._search_step_direct(company)
         log.info("╚══ SEARCH COMPLETE: %d unique markets in %.1fs ══╝",
                  len(markets), time.time() - t0)
 

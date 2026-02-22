@@ -31,8 +31,20 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components/ui/toggle-group"
+import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { useTicker } from "@/lib/ticker-context"
+import { IconTrendingUp, IconTrendingDown } from "@tabler/icons-react"
+
+interface KpiData {
+  ticker: string
+  price: number
+  pct_change: number
+  news_volume: number
+  avg_sentiment: number
+  signal: string
+  rsi: number
+}
 
 // Plotly loaded dynamically (SSR incompatible)
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false })
@@ -148,10 +160,11 @@ const periodLabels: Record<string, string> = {
 export function ChartAreaInteractive() {
   const [period, setPeriod] = React.useState("3mo")
   const { ticker, setTicker } = useTicker()
-  const [chartMode, setChartMode] = React.useState<"area" | "candle">("area")
+  const [chartMode, setChartMode] = React.useState<"area" | "candle" | "indicators">("candle")
   const [rawData, setRawData] = React.useState<PricePoint[]>([])
   const [chartData, setChartData] = React.useState<ChartPoint[]>([])
   const [loading, setLoading] = React.useState(true)
+  const [kpiData, setKpiData] = React.useState<KpiData | null>(null)
 
   React.useEffect(() => {
     setLoading(true)
@@ -169,6 +182,14 @@ export function ChartAreaInteractive() {
       })
       .finally(() => setLoading(false))
   }, [period, ticker])
+
+  // Fetch KPI data for the indicators tab
+  React.useEffect(() => {
+    fetch(`http://localhost:8000/api/kpis?ticker=${ticker}`)
+      .then((r) => r.json())
+      .then((d: KpiData) => setKpiData(d))
+      .catch(() => setKpiData(null))
+  }, [ticker])
 
   /* ── Plotly candlestick (exact replica of visualizer.py) ── */
   const renderCandlestick = () => {
@@ -333,7 +354,9 @@ export function ChartAreaInteractive() {
           <CardDescription>
             {chartMode === "area"
               ? `Price × Engouement — ${periodLabels[period]}`
-              : `OHLC Candlestick + Volume — ${periodLabels[period]}`}
+              : chartMode === "candle"
+                ? `OHLC Candlestick + Volume — ${periodLabels[period]}`
+                : `Financial Indicators — ${ticker}`}
           </CardDescription>
         </div>
         <div className="flex items-center gap-2">
@@ -341,7 +364,7 @@ export function ChartAreaInteractive() {
           <ToggleGroup
             type="single"
             value={chartMode}
-            onValueChange={(v) => v && setChartMode(v as "area" | "candle")}
+            onValueChange={(v) => v && setChartMode(v as "area" | "candle" | "indicators")}
             variant="outline"
             className="*:data-[slot=toggle-group-item]:!px-3"
           >
@@ -350,6 +373,9 @@ export function ChartAreaInteractive() {
             </ToggleGroupItem>
             <ToggleGroupItem value="candle" aria-label="Candlestick chart">
               Candle
+            </ToggleGroupItem>
+            <ToggleGroupItem value="indicators" aria-label="Financial indicators">
+              Indicators
             </ToggleGroupItem>
           </ToggleGroup>
           {/* Period selector */}
@@ -463,6 +489,63 @@ export function ChartAreaInteractive() {
               <ChartLegend content={<ChartLegendContent />} />
             </AreaChart>
           </ChartContainer>
+        )}
+        {/* ── Financial Indicators tab ── */}
+        {!loading && chartMode === "indicators" && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {/* RSI Card */}
+            {kpiData ? (() => {
+              const rsi = kpiData.rsi
+              const rsiStatus = rsi > 70 ? "Overbought" : rsi < 30 ? "Oversold" : "Neutral"
+              const rsiColor = rsi > 70 ? "#ef4444" : rsi < 30 ? "#22c55e" : "#f59e0b"
+              const barPct = Math.min(100, Math.max(0, rsi))
+              return (
+                <div className="rounded-xl border bg-card p-5 shadow-xs">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium text-muted-foreground">RSI (14)</span>
+                    <Badge variant="outline" style={{ color: rsiColor, borderColor: rsiColor }}>
+                      {rsi > 50 ? <IconTrendingUp className="mr-1 size-3" /> : <IconTrendingDown className="mr-1 size-3" />}
+                      {rsiStatus}
+                    </Badge>
+                  </div>
+                  <div className="text-3xl font-bold tabular-nums" style={{ color: rsiColor }}>
+                    {rsi.toFixed(1)}
+                  </div>
+                  {/* RSI bar */}
+                  <div className="mt-3 relative h-3 w-full rounded-full bg-muted overflow-hidden">
+                    {/* Zone markers */}
+                    <div className="absolute inset-0 flex">
+                      <div className="w-[30%] bg-green-500/15" />
+                      <div className="w-[40%] bg-yellow-500/15" />
+                      <div className="w-[30%] bg-red-500/15" />
+                    </div>
+                    {/* Current value indicator */}
+                    <div
+                      className="absolute top-0 h-full w-1 rounded-full"
+                      style={{ left: `${barPct}%`, backgroundColor: rsiColor, transform: "translateX(-50%)" }}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground">
+                    <span>0 — Oversold</span>
+                    <span>50</span>
+                    <span>Overbought — 100</span>
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    14-period Relative Strength Index
+                  </p>
+                </div>
+              )
+            })() : (
+              <div className="flex h-[200px] items-center justify-center rounded-xl border bg-card">
+                <Spinner className="size-5" />
+              </div>
+            )}
+
+            {/* Placeholder for future indicators */}
+            <div className="flex h-full min-h-[200px] items-center justify-center rounded-xl border border-dashed bg-card/50 text-sm text-muted-foreground">
+              More indicators coming soon…
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

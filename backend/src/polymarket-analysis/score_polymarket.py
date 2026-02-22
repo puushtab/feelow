@@ -542,107 +542,106 @@ def process_polymarket_markets(
         "claude_block": claude_block,
     }
     
-    
-# ----------------------------
-# EXAMPLE USAGE (advanced + pipeline)
-# ----------------------------
-
-market1_data = {
-    "question": "Will NVIDIA be the third-largest company in the world by market cap on February 28?",
-    "event_title": "3rd largest company end of February?",
-    "active": True,
-    "closed": False,
-    "end_date": "2026-02-28T00:00:00Z",
-    "volume": 67907.85,
-    "liquidity": 13568.55,
-    "outcomes": ["Yes", "No"],
-    "outcome_prices": [0.0045, 0.9955],
-    "url": "https://polymarket.com/event/will-nvidia-be-the-third-largest-company-in-the-world-by-market-cap-on-february-28",
-    # mostly stale at 0.5
-    "history": [
-        {"t": 1771536017, "p": 0.5},
-        {"t": 1771537219, "p": 0.5},
-        {"t": 1771538422, "p": 0.5},
-        {"t": 1771677618, "p": 0.495},
-        {"t": 1771678825, "p": 0.495},
-        {"t": 1771701619, "p": 0.49},
-        {"t": 1771702818, "p": 0.495},
-        {"t": 1771704024, "p": 0.49},
-        {"t": 1771704258, "p": 0.5},
-    ],
-    "pertinence_score": 0.8,
-}
-
-market2_data = {
-    "question": "Will NVIDIA be the second-largest company in the world by market cap on February 28?",
-    "event_title": "2nd largest company end of February?",
-    "active": True,
-    "closed": False,
-    "end_date": "2026-02-28T00:00:00Z",
-    "volume": 55000,
-    "liquidity": 12000,
-    "outcomes": ["Yes", "No"],
-    "outcome_prices": [0.01, 0.99],
-    "url": "https://polymarket.com/event/will-nvidia-be-the-second-largest-company-in-the-world-by-market-cap-on-february-28",
-    "history": [
-        {"t": 1771536017, "p": 0.5},
-        {"t": 1771537219, "p": 0.5},
-        {"t": 1771538422, "p": 0.5},
-        {"t": 1771677618, "p": 0.50},
-        {"t": 1771678825, "p": 0.505},
-        {"t": 1771701619, "p": 0.50},
-        {"t": 1771702818, "p": 0.505},
-        {"t": 1771704024, "p": 0.50},
-        {"t": 1771704258, "p": 0.495},
-    ],
-    "pertinence_score": 0.7,
-}
-
-# 1) Manual usage (simple + advanced)
-markets = [Market(market1_data), Market(market2_data)]
-
-for m in markets:
-    m.compute_metrics()
-    m.compute_advanced_metrics(recent_points=20, jump_threshold=0.005)
-    m.compute_score()
-    m.compute_engagement()
-
-markets_sorted = sorted(markets, key=lambda x: x.score * x.engagement, reverse=True)
-
-corr = market_correlation(markets_sorted[0], markets_sorted[1]) if len(markets_sorted) >= 2 else 0.0
-
-# (Optional) keep your old "global score" spirit, but avoid the double-multiply bug:
-weights = np.array([m.score * m.engagement for m in markets_sorted], dtype=float)
-denom = float(weights.sum()) if float(weights.sum()) > 1e-12 else 1.0
-global_score = float(np.sum(weights * weights) / denom)
-
-print("\n===== MANUAL (simple + advanced) =====")
-for i, m in enumerate(markets_sorted, 1):
-    print(f"\n#{i} Market: {m.question}")
-    print(f"URL: {m.url}")
-    print(f"Score individuel: {m.score:.4f}")
-    print(f"Engagement: {m.engagement:.4f}")
-    print(f"Breakdown metrics: { {k: round(v,4) for k,v in m.metrics.items()} }")
-    print(f"Advanced: { {k: (round(v,6) if isinstance(v,(int,float)) and v is not None else v) for k,v in m.advanced.items()} }")
-    print("\n--- Claude-ready summary block ---")
-    print(m.polymarket_summary_text())
-
-print("\n--- Corrélation entre marchés ---")
-print("Corrélation:", round(corr, 4))
-print("\n--- Score global pondéré ---")
-print("Global score:", round(global_score, 4))
 
 
-# 2) Pipeline usage (recommended for your app)
-print("\n\n===== PIPELINE (process_polymarket_markets) =====")
-pipeline_res = process_polymarket_markets([market1_data, market2_data], top_k=2)
+if __name__ == "__main__":
+    # ----------------------------
+    # EXAMPLE USAGE (advanced + pipeline)
+    # ----------------------------
 
-print("\nTop markets summary objects:")
-for s in pipeline_res["top_markets_summary"]:
-    print(s)
+    market1_data = {
+        "question": "Will NVIDIA be the third-largest company in the world by market cap on February 28?",
+        "event_title": "3rd largest company end of February?",
+        "active": True,
+        "closed": False,
+        "end_date": "2026-02-28T00:00:00Z",
+        "volume": 67907.85,
+        "liquidity": 13568.55,
+        "outcomes": ["Yes", "No"],
+        "outcome_prices": [0.0045, 0.9955],
+        "url": "https://polymarket.com/event/will-nvidia-be-the-third-largest-company-in-the-world-by-market-cap-on-february-28",
+        "history": [
+            {"t": 1771536017, "p": 0.5},
+            {"t": 1771537219, "p": 0.5},
+            {"t": 1771538422, "p": 0.5},
+            {"t": 1771677618, "p": 0.495},
+            {"t": 1771678825, "p": 0.495},
+            {"t": 1771701619, "p": 0.49},
+            {"t": 1771702818, "p": 0.495},
+            {"t": 1771704024, "p": 0.49},
+            {"t": 1771704258, "p": 0.5},
+        ],
+        "pertinence_score": 0.8,
+    }
 
-print("\nCorrelation top2:", round(pipeline_res["corr_top2"], 4))
-print("Global score:", round(pipeline_res["global_score"], 4))
+    market2_data = {
+        "question": "Will NVIDIA be the second-largest company in the world by market cap on February 28?",
+        "event_title": "2nd largest company end of February?",
+        "active": True,
+        "closed": False,
+        "end_date": "2026-02-28T00:00:00Z",
+        "volume": 55000,
+        "liquidity": 12000,
+        "outcomes": ["Yes", "No"],
+        "outcome_prices": [0.01, 0.99],
+        "url": "https://polymarket.com/event/will-nvidia-be-the-second-largest-company-in-the-world-by-market-cap-on-february-28",
+        "history": [
+            {"t": 1771536017, "p": 0.5},
+            {"t": 1771537219, "p": 0.5},
+            {"t": 1771538422, "p": 0.5},
+            {"t": 1771677618, "p": 0.50},
+            {"t": 1771678825, "p": 0.505},
+            {"t": 1771701619, "p": 0.50},
+            {"t": 1771702818, "p": 0.505},
+            {"t": 1771704024, "p": 0.50},
+            {"t": 1771704258, "p": 0.495},
+        ],
+        "pertinence_score": 0.7,
+    }
 
-print("\n--- Claude block to inject into your report prompt ---")
-print(pipeline_res["claude_block"])
+    # 1) Manual usage (simple + advanced)
+    markets = [Market(market1_data), Market(market2_data)]
+
+    for m in markets:
+        m.compute_metrics()
+        m.compute_advanced_metrics(recent_points=20, jump_threshold=0.005)
+        m.compute_score()
+        m.compute_engagement()
+
+    markets_sorted = sorted(markets, key=lambda x: x.score * x.engagement, reverse=True)
+
+    corr = market_correlation(markets_sorted[0], markets_sorted[1]) if len(markets_sorted) >= 2 else 0.0
+
+    weights = np.array([m.score * m.engagement for m in markets_sorted], dtype=float)
+    denom = float(weights.sum()) if float(weights.sum()) > 1e-12 else 1.0
+    global_score = float(np.sum(weights * weights) / denom)
+
+    print("\n===== MANUAL (simple + advanced) =====")
+    for i, m in enumerate(markets_sorted, 1):
+        print(f"\n#{i} Market: {m.question}")
+        print(f"URL: {m.url}")
+        print(f"Score individuel: {m.score:.4f}")
+        print(f"Engagement: {m.engagement:.4f}")
+        print(f"Breakdown metrics: { {k: round(v,4) for k,v in m.metrics.items()} }")
+        print(f"Advanced: { {k: (round(v,6) if isinstance(v,(int,float)) and v is not None else v) for k,v in m.advanced.items()} }")
+        print("\n--- Claude-ready summary block ---")
+        print(m.polymarket_summary_text())
+
+    print("\n--- Corrélation entre marchés ---")
+    print("Corrélation:", round(corr, 4))
+    print("\n--- Score global pondéré ---")
+    print("Global score:", round(global_score, 4))
+
+    # 2) Pipeline usage (recommended for your app)
+    print("\n\n===== PIPELINE (process_polymarket_markets) =====")
+    pipeline_res = process_polymarket_markets([market1_data, market2_data], top_k=2)
+
+    print("\nTop markets summary objects:")
+    for s in pipeline_res["top_markets_summary"]:
+        print(s)
+
+    print("\nCorrelation top2:", round(pipeline_res["corr_top2"], 4))
+    print("Global score:", round(pipeline_res["global_score"], 4))
+
+    print("\n--- Claude block to inject into your report prompt ---")
+    print(pipeline_res["claude_block"])

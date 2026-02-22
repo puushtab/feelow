@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
+import { Gauge, valueToColor, valueToLabel } from '@/components/ui/gauge'
 import { useTicker, type PolymarketData } from '@/lib/ticker-context'
 
 interface KpiData {
@@ -76,7 +77,7 @@ export function SectionCards() {
         : "text-yellow-500"
 
   return (
-    <div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-5">
+    <div className="*:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
       {/* Price */}
       <Card className="@container/card">
         <CardHeader>
@@ -104,29 +105,7 @@ export function SectionCards() {
         </CardFooter>
       </Card>
 
-      {/* News Volume */}
-      <Card className="@container/card">
-        <CardHeader>
-          <CardDescription>News Volume (24h)</CardDescription>
-          <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
-            {data.news_volume}
-          </CardTitle>
-          <CardAction>
-            <Badge variant="outline">
-              {data.news_volume > 10 ? <IconTrendingUp /> : <IconTrendingDown />}
-              {data.news_volume > 10 ? "Active" : "Low"}
-            </Badge>
-          </CardAction>
-        </CardHeader>
-        <CardFooter className="flex-col items-start gap-1.5 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            {data.news_volume} articles collected
-          </div>
-          <div className="text-muted-foreground">
-            Yahoo Finance + Finviz
-          </div>
-        </CardFooter>
-      </Card>
+
 
       {/* Avg Sentiment */}
       <Card className="@container/card">
@@ -148,35 +127,6 @@ export function SectionCards() {
           </div>
           <div className="text-muted-foreground">
             FinBERT sentiment analysis
-          </div>
-        </CardFooter>
-      </Card>
-
-      {/* RSI */}
-      <Card className="@container/card">
-        <CardHeader>
-          <CardDescription>RSI (14)</CardDescription>
-          <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
-            {data.rsi.toFixed(1)}
-          </CardTitle>
-          <CardAction>
-            <Badge variant="outline">
-              {data.rsi > 50 ? <IconTrendingUp /> : <IconTrendingDown />}
-              {rsiStatus}
-            </Badge>
-          </CardAction>
-        </CardHeader>
-        <CardFooter className="flex-col items-start gap-1.5 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            {rsiStatus}
-            {data.rsi > 50 ? (
-              <IconTrendingUp className="size-4" />
-            ) : (
-              <IconTrendingDown className="size-4" />
-            )}
-          </div>
-          <div className="text-muted-foreground">
-            14-period Relative Strength Index
           </div>
         </CardFooter>
       </Card>
@@ -212,6 +162,41 @@ export function SectionCards() {
           </div>
         </CardFooter>
       </Card>
+
+      {/* Combined Gauge — mean of sentiment + polymarket */}
+      {(() => {
+        const sentiment = data.avg_sentiment ?? 0 // already in [-1, 1]
+        const polyScore = polymarket.loading || polymarket.error
+          ? 0
+          : (polymarket.global_score ?? 0) // already [-1, 1] from signed scorer
+        const combined = (sentiment + polyScore) / 2
+        const color = valueToColor(combined)
+        const label = valueToLabel(combined)
+        return (
+          <Card className="@container/card">
+            <CardHeader>
+              <CardDescription>Investment Signal</CardDescription>
+              <CardAction>
+                <Badge variant="outline" style={{ color, borderColor: color }}>
+                  {combined >= 0 ? <IconTrendingUp /> : <IconTrendingDown />}
+                  {label}
+                </Badge>
+              </CardAction>
+            </CardHeader>
+            <div className="flex items-center justify-center pb-2">
+              <Gauge value={combined} size={150} />
+            </div>
+            <CardFooter className="flex-col items-start gap-1.5 text-sm">
+              <div className="line-clamp-1 flex gap-2 font-medium">
+                Sentiment {sentiment >= 0 ? "+" : ""}{sentiment.toFixed(2)} · Poly {((polymarket.global_score ?? 0) * 100).toFixed(0)}%
+              </div>
+              <div className="text-muted-foreground">
+                Mean of FinBERT + Polymarket scores
+              </div>
+            </CardFooter>
+          </Card>
+        )
+      })()}
     </div>
   )
 }
