@@ -3,18 +3,11 @@ from __future__ import annotations
 from ..schema import Bundle
 
 SOURCE_PRIOR = {
-    "sec_8k": 1.00,
-    "sec_10q": 0.95,
-    "sec_10k": 0.95,
-    "sec_form4": 0.90,
-    "earnings_call": 0.90,
-    "reuters": 0.90,
-    "bloomberg": 0.88,
-    "ft": 0.87,
-    "wsj": 0.87,
-    "analyst_rating": 0.80,
-    "reddit": 0.55,
-    "x": 0.55,
+    "earnings_video": 0.9,
+    "reddit_image": 0.6,
+    "twitter_image": 0.65,
+    "instagram_image": 0.55,
+    "google_trends_image": 0.75,
 }
 
 class ReliabilityScorer:
