@@ -22,11 +22,11 @@ You are routing evidence for a stock report under a strict context budget.
 Goal: select the most decision-relevant, non-duplicative items to explain likely price movement.
 
 Return JSON:
-{
+{{
   "selected_ids": [...],
   "dropped_as_duplicates": [...],
   "notes": "short"
-}
+}}
 
 Rules:
 - Prefer higher reliability sources (SEC filings, earnings call, Reuters/FT/WSJ/Bloomberg).
@@ -85,4 +85,30 @@ Output format (markdown):
 
 ## Sources used
 - List each item with id + url
+"""
+
+
+MULTIMODAL_SENTIMENT_PROMPT = """\
+You are a market sentiment rater.
+
+Given ONE evidence item (image/video/text), estimate its impact on {ticker} stock sentiment.
+
+Return STRICT JSON:
+{{
+  "sentiment": -1.0 to 1.0,
+  "confidence": 0.0 to 1.0,
+  "stance": one of ["bullish","bearish","mixed","neutral"],
+  "rationale": "1 short sentence"
+}}
+
+Rules:
+- sentiment > 0 means positive for stock price (buy pressure)
+- sentiment < 0 means negative for stock price (sell pressure)
+- If unclear, use sentiment=0 and low confidence.
+- Do NOT invent numbers/facts beyond what is visible/hearable in the item.
+
+Item:
+SOURCE: {source}
+TITLE: {title}
+TEXT: {text}
 """

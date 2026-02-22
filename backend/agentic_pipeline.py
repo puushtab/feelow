@@ -34,6 +34,9 @@ from src.agent_search.scoring.relevance import RelevanceScorer
 from src.agent_search.scoring.novelty import NoveltyScorer
 from src.agent_search.scoring.sentiment import SentimentScorer
 from src.agent_search.scoring.impact import ImpactScorer
+from src.agent_search.utils import safe_json_loads
+from src.agent_search.utils import load_media_part
+from src.agent_search.scoring.mm_sentiment import MultimodalSentimentScorer
 
 from src.agent_search.collectors.local_video import EarningsVideoCollector
 from src.agent_search.collectors.local_images import LocalImageCollector
@@ -70,37 +73,6 @@ class AgenticPipelineConfig:
     # cache behavior
     novelty_ttl_seconds: int = 7 * 24 * 3600
 
-
-# ---------------------------
-# Robust JSON extraction
-# ---------------------------
-
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL | re.IGNORECASE)
-_FIRST_JSON_OBJ_RE = re.compile(r"(\{.*\}|\[.*\])", re.DOTALL)
-
-def _extract_json_text(raw: str) -> Optional[str]:
-    if not raw or not isinstance(raw, str):
-        return None
-    m = _JSON_FENCE_RE.search(raw)
-    if m:
-        return m.group(1).strip()
-    m = _FIRST_JSON_OBJ_RE.search(raw.strip())
-    if m:
-        return m.group(1).strip()
-    return None
-
-def _safe_json_loads(raw: str) -> Optional[Any]:
-    jtxt = _extract_json_text(raw) or raw
-    try:
-        return json.loads(jtxt)
-    except Exception:
-        try:
-            jtxt2 = re.sub(r",\s*([}\]])", r"\1", jtxt)
-            return json.loads(jtxt2)
-        except Exception:
-            return None
-
-
 # ---------------------------
 # Media helpers (local assets)
 # ---------------------------
@@ -122,17 +94,6 @@ def _guess_mime(path: Union[str, Path]) -> str:
     if p.endswith(".wav"):
         return "audio/wav"
     return "application/octet-stream"
-
-
-def _load_media_part(path: Union[str, Path]) -> Dict[str, Any]:
-    """
-    Returns a Gemini "part" dict: {"mime_type": "...", "data": bytes}
-    Compatible with google-generativeai content parts.
-    """
-    path = Path(path)
-    mime = _guess_mime(path)
-    data = path.read_bytes()
-    return {"mime_type": mime, "data": data}
 
 
 def _item_media_paths(it: Item) -> List[str]:
@@ -351,12 +312,12 @@ def _summarize_item_if_needed(llm_client: GeminiLLMClient, it: Item, cfg: Agenti
         # keep bounded
         for p in media_paths[: cfg.max_media_per_call]:
             try:
-                media_parts.append(_load_media_part(p))
+                media_parts.append(load_media_part(p))
             except Exception:
                 pass
 
     raw = llm_client.complete(prompt=prompt, media_parts=media_parts if media_parts else None)
-    data = _safe_json_loads(raw)
+    data = safe_json_loads(raw)
 
     if not isinstance(data, dict):
         # Fallback: store a compact string
@@ -423,7 +384,7 @@ def _llm_route_items(
 
     prompt = ROUTER_LLM_PROMPT.format(max_items=cfg.max_items, items_table=table)
     raw = llm_client.complete(prompt=prompt)
-    decision = _safe_json_loads(raw)
+    decision = safe_json_loads(raw)
 
     if not isinstance(decision, dict):
         return [], {"error": "router_json_parse_failed", "raw": raw[:800]}
@@ -468,7 +429,7 @@ def _synthesize_report(llm_client: GeminiLLMClient, bundle: Bundle, cfg: Agentic
                 if len(media_parts) >= cfg.max_media_per_call:
                     break
                 try:
-                    media_parts.append(_load_media_part(p))
+                    media_parts.append(load_media_part(p))
                 except Exception:
                     pass
 
@@ -510,13 +471,13 @@ def run_agentic_pipeline(
     reliability = ReliabilityScorer()
     relevance = RelevanceScorer()
     novelty = NoveltyScorer(cache=cache)
-    sentiment = SentimentScorer()
+    mm_sentiment = MultimodalSentimentScorer(llm_client=llm_client, max_items=20)
     impact = ImpactScorer()
 
     reliability.apply(bundle)
     relevance.apply(bundle)
     novelty.apply(bundle)
-    sentiment.apply(bundle)
+    mm_sentiment.apply(bundle)
     impact.apply(bundle)
 
     # Compute quality
