@@ -1,11 +1,10 @@
 """
-Market Scorer v2
-=================
-Improved version of score_polymarket.py with:
-  - FilterConfig for tradability thresholds
-  - sentiment_rank() weighted by volume/liquidity
-  - Filter fallback (keeps all markets if none pass filter)
-  - test_markets() debug helper
+Market Scorer v2 - SIGNED SCORES
+==================================
+Modified version with scores between -1 and 1:
+  - composite_signal naturellement entre -1 et 1
+  - sentiment_rank() entre -1 et 1
+  - compute_score() adaptée pour signer les résultats
 """
 
 import math
@@ -21,6 +20,11 @@ from typing import Optional, List, Dict, Any, Tuple
 
 def _clip01(p: float, eps: float = 1e-12) -> float:
     return max(eps, min(1.0 - eps, float(p)))
+
+
+def _clip11(s: float) -> float:
+    """Clamp to [-1, 1]"""
+    return max(-1.0, min(1.0, float(s)))
 
 
 def _history_arrays(history: Any) -> Tuple[np.ndarray, np.ndarray]:
@@ -128,6 +132,7 @@ def _binary_entropy(p: float, eps: float = 1e-12) -> float:
 class Market:
     """
     Represents a Polymarket market with snapshot + history-derived features.
+    Scores are between -1 and 1.
     """
 
     def __init__(self, data: Dict[str, Any]):
@@ -147,11 +152,11 @@ class Market:
 
         self.metrics: Dict[str, float] = {}
         self.advanced: Dict[str, Any] = {}
-        self.score = 0.0
+        self.score = 0.0  # Now [-1, 1]
         self.engagement = 0.0
 
     # ----------------------------
-    # SIMPLE METRICS
+    # SIMPLE METRICS (0-1 range)
     # ----------------------------
     def compute_metrics(self) -> Dict[str, float]:
         momentum = self.compute_momentum()
@@ -274,7 +279,10 @@ class Market:
             rel = pertinence * (history_quality if history_quality is not None else 1.0) * liquidity_factor * stale_factor * whale_factor
 
             intensity = math.tanh(20.0 * abs(slope_recent)) * math.tanh(5.0 * total_variation)
+            
+            # Le signal reste signé naturellement par slope_recent
             composite_signal = float(rel * math.copysign(intensity, slope_recent))
+            composite_signal = _clip11(composite_signal)
 
         self.advanced = {
             "history_points": n,
@@ -304,24 +312,28 @@ class Market:
         return self.advanced
 
     # ----------------------------
-    # SCORE / ENGAGEMENT (keep)
+    # SCORE / ENGAGEMENT (SIGNED)
     # ----------------------------
     def compute_score(self) -> float:
-        if not self.metrics:
-            self.compute_metrics()
-        weights = {
-            "momentum": 0.25,
-            "volatility": 0.15,
-            "concentration": 0.2,
-            "volume": 0.1,
-            "liquidity": 0.1,
-            "pertinence": 0.2,
-        }
-        self.score = sum(self.metrics[k] * weights[k] for k in weights)
-        self.score = float(max(0.0, min(self.score, 1.0)))
+        """
+        Score entre -1 et 1.
+        Utilise composite_signal comme base signée.
+        """
+        if not self.advanced:
+            self.compute_advanced_metrics()
+        
+        composite = self.advanced.get("composite_signal")
+        
+        if composite is None:
+            self.score = 0.0
+        else:
+            # composite_signal est déjà entre -1 et 1
+            self.score = float(_clip11(composite))
+        
         return self.score
 
     def compute_engagement(self) -> float:
+        """Engagement reste [0, 1]"""
         if not self.metrics:
             self.compute_metrics()
         self.engagement = float(
@@ -340,11 +352,11 @@ class FilterConfig:
     min_volume: float = 10_000.0
     min_liquidity: float = 3_000.0
     min_yes_prob: float = 0.60
-    min_composite: float = 0.10
+    min_composite: float = 0.10  # Peut être positif ou négatif
     max_whale_dom: float = 0.60
     max_jump_abs: float = 0.03
     min_change_count: int = 5
-    min_time_to_event_days: Optional[float] = None  # ex: 7.0 if you want
+    min_time_to_event_days: Optional[float] = None
 
 
 def tradable_reasons(m: Market, cfg: FilterConfig) -> List[str]:
@@ -368,8 +380,12 @@ def tradable_reasons(m: Market, cfg: FilterConfig) -> List[str]:
         reasons.append(f"liquidity<{cfg.min_liquidity} (liq={liq:.0f})")
     if p_yes is None or float(p_yes) < cfg.min_yes_prob:
         reasons.append(f"p_yes<{cfg.min_yes_prob} (p_yes={'None' if p_yes is None else f'{float(p_yes):.4f}'})")
-    if comp is None or float(comp) < cfg.min_composite:
+    
+    # Pour composite, on check la valeur absolue
+    comp_abs = None if comp is None else abs(float(comp))
+    if comp is None or comp_abs < cfg.min_composite:
         reasons.append(f"composite<{cfg.min_composite} (comp={'None' if comp is None else f'{float(comp):.6f}'})")
+    
     if whale_dom is None or float(whale_dom) > cfg.max_whale_dom:
         reasons.append(f"whale_dom>{cfg.max_whale_dom} (whale_dom={'None' if whale_dom is None else f'{float(whale_dom):.4f}'})")
     if max_jump >= cfg.max_jump_abs:
@@ -387,12 +403,20 @@ def is_tradable(m: Market, cfg: FilterConfig) -> bool:
 
 
 def sentiment_rank(m: Market) -> float:
+    """
+    Score de sentiment entre -1 et 1.
+    Intègre composite_signal (signé) pondéré par volume et liquidity.
+    """
     if not m.advanced:
         m.compute_advanced_metrics()
+    
     comp = float(m.advanced.get("composite_signal") or 0.0)
     vol_factor = math.tanh(float(m.volume or 0.0) / 50_000.0)
     liq_factor = math.tanh(float(m.liquidity or 0.0) / 10_000.0)
-    return comp * (0.5 + 0.5 * vol_factor) * (0.5 + 0.5 * liq_factor)
+    
+    # Reste signé
+    rank = comp * (0.5 + 0.5 * vol_factor) * (0.5 + 0.5 * liq_factor)
+    return _clip11(rank)
 
 
 def test_markets(markets: List[Market], cfg: FilterConfig) -> None:
@@ -472,7 +496,8 @@ def process_polymarket_markets(
 
     corr_top2 = market_correlation(markets_sorted[0], markets_sorted[1]) if len(markets_sorted) >= 2 else 0.0
 
-    weights = np.array([m.score * m.engagement for m in markets_sorted], dtype=float)
+    # Adapter le calcul du global_score pour les scores signés
+    weights = np.array([abs(m.score) * m.engagement for m in markets_sorted], dtype=float)
     denom = float(weights.sum()) if float(weights.sum()) > 1e-12 else 1.0
     global_score = float(np.sum(weights * weights) / denom)
 
@@ -571,6 +596,7 @@ if __name__ == "__main__":
     print("\nTop markets by sentiment rank:")
     for i, m in enumerate(res["top_markets"], 1):
         print(f"\n#{i} {m.question}")
-        print(f"  rank={sentiment_rank(m):.4f}  p_yes={m.advanced.get('p_last')}  comp={m.advanced.get('composite_signal')}")
-        print(f"  whale_dom={m.advanced.get('whale_dom')}  change_count={m.advanced.get('change_count')}")
+        print(f"  score={m.score:.4f}  rank={sentiment_rank(m):.4f}  p_yes={m.advanced.get('p_last')}")
+        print(f"  composite={m.advanced.get('composite_signal'):.6f}  whale_dom={m.advanced.get('whale_dom')}")
+        print(f"  change_count={m.advanced.get('change_count')}")
         print(f"  url={m.url}")

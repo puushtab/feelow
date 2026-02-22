@@ -19,7 +19,7 @@ model = AutoModelForSequenceClassification.from_pretrained(
 model.eval()  # evaluation mode
 
 # ─── Function to compute sentiment score ─────────────────────
-def compute_sentiment_score(company_name: str, top_k: Optional[int] = 50) -> float:
+def compute_sentiment_score(company_name: str, top_k: Optional[int] = 200) -> float:
     """
     Compute average sentiment score for news mentioning the company_name.
     Returns a score between -1 (negative) and 1 (positive).
