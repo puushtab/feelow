@@ -1,5 +1,9 @@
 # Feelow 🦈
 
+
+https://github.com/user-attachments/assets/724ae9c5-8c7e-4534-89c7-e4a3f3e6808f
+
+
 Personal Finance Agent based on Polymarket Monitoring
 
 ## Overview
