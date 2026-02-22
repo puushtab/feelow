@@ -168,7 +168,7 @@ export function SectionCards() {
         const sentiment = data.avg_sentiment ?? 0 // already in [-1, 1]
         const polyScore = polymarket.loading || polymarket.error
           ? 0
-          : (polymarket.global_score ?? 0) * 2 - 1 // map [0,1] → [-1,1]
+          : (polymarket.global_score ?? 0) // already [-1, 1] from signed scorer
         const combined = (sentiment + polyScore) / 2
         const color = valueToColor(combined)
         const label = valueToLabel(combined)
